@@ -18,23 +18,90 @@ final class QuestsController extends Controller
     {
         $items = app(QuestQuery::class)->visible(null, null)->latest()->paginate(min($request->integer('page_size', 25), 100));
 
-        return response()->json(['data' => $items->through(fn (Model $item, int $key): array => $this->resource($item))]);
+        return response()->json($items->through(fn (Quest $item): array => $this->resource($item)));
     }
 
-    public function show(Quest $quest): JsonResponse
+    public function available(Request $request): JsonResponse
     {
+        return $this->progressList($request, 'availableFor');
+    }
+
+    public function active(Request $request): JsonResponse
+    {
+        return $this->progressList($request, 'activeFor');
+    }
+
+    public function completed(Request $request): JsonResponse
+    {
+        return $this->progressList($request, 'completedFor');
+    }
+
+    public function show(Request $request, Quest $quest): JsonResponse
+    {
+        $quest = $this->authorizedQuest($request, $quest);
+
         return response()->json(['data' => $this->resource($quest)]);
     }
 
     public function progress(Request $request, Quest $quest): JsonResponse
     {
-        $result = app(QuestsManager::class)->progress($quest, (string) $request->user()->getKey(), (array) $request->input('progress', []), (string) $request->input('status', 'in_progress'));
+        $quest = $this->authorizedQuest($request, $quest);
+        $validated = $request->validate(['progress' => ['required', 'array'], 'status' => ['nullable', 'in:in_progress,completed'], 'idempotency_key' => ['nullable', 'string', 'max:128']]);
+        $result = app(QuestsManager::class)->progress($quest, (string) $request->user()->getKey(), $validated['progress'], $validated['status'] ?? 'in_progress', $validated['idempotency_key'] ?? $request->header('Idempotency-Key'));
 
-        return response()->json(['data' => ['id' => (string) $result->getKey(), 'type' => 'browser-game-quest-progress', 'attributes' => ['status' => $result->getAttribute('status'), 'progress' => $result->getAttribute('progress')]]]);
+        return response()->json(['data' => $this->progressResource($result)]);
+    }
+
+    public function accept(Request $request, Quest $quest): JsonResponse
+    {
+        $quest = $this->authorizedQuest($request, $quest);
+        $data = $request->validate(['idempotency_key' => ['nullable', 'string', 'max:128']]);
+
+        return response()->json(['data' => $this->progressResource(app(QuestsManager::class)->accept($quest, (string) $request->user()->getKey(), $data, $data['idempotency_key'] ?? $request->header('Idempotency-Key')))], 201);
+    }
+
+    public function complete(Request $request, Quest $quest): JsonResponse
+    {
+        $quest = $this->authorizedQuest($request, $quest);
+        $data = $request->validate(['progress' => ['nullable', 'array'], 'idempotency_key' => ['nullable', 'string', 'max:128']]);
+
+        return response()->json(['data' => $this->progressResource(app(QuestsManager::class)->complete($quest, (string) $request->user()->getKey(), $data['idempotency_key'] ?? $request->header('Idempotency-Key'), $data['progress'] ?? null))]);
+    }
+
+    public function abandon(Request $request, Quest $quest): JsonResponse
+    {
+        $quest = $this->authorizedQuest($request, $quest);
+
+        return response()->json(['data' => $this->progressResource(app(QuestsManager::class)->abandon($quest, (string) $request->user()->getKey()))]);
+    }
+
+    private function progressList(Request $request, string $method): JsonResponse
+    {
+        $user = $request->user();
+        $team = $user?->currentTeam;
+        $quests = app(QuestQuery::class)->{$method}(
+            (string) $user->getKey(),
+            $team?->getAttribute('tenant_id'),
+            $team?->getKey() === null ? null : (string) $team->getKey(),
+        )->latest()->paginate(min(max($request->integer('page[size]', $request->integer('page_size', 25)), 1), 100));
+
+        return response()->json($quests->through(fn (Quest $quest): array => $this->resource($quest)));
+    }
+
+    private function authorizedQuest(Request $request, Quest $quest): Quest
+    {
+        $team = $request->user()?->currentTeam;
+
+        return app(QuestQuery::class)->visible($team?->getAttribute('tenant_id'), $team?->getKey() === null ? null : (string) $team->getKey())->whereKey($quest->getKey())->firstOrFail();
     }
 
     private function resource(Model $quest): array
     {
         return ['id' => (string) $quest->getKey(), 'type' => 'browser-game-quest', 'attributes' => ['slug' => $quest->getAttribute('slug'), 'name' => $quest->getAttribute('name'), 'status' => $quest->getAttribute('status'), 'objectives' => $quest->getAttribute('objectives'), 'rewards' => $quest->getAttribute('rewards'), 'repeatable' => $quest->getAttribute('repeatable')]];
+    }
+
+    private function progressResource(Model $progress): array
+    {
+        return ['id' => (string) $progress->getKey(), 'type' => 'browser-game-quest-progress', 'attributes' => $progress->only(['quest_id', 'actor_id', 'status', 'progress', 'accepted_at', 'completed_at', 'reward_claimed_at', 'completion_count'])];
     }
 }
