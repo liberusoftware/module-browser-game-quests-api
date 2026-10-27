@@ -16,7 +16,8 @@ final class QuestsController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $items = app(QuestQuery::class)->visible(null, null)->latest()->paginate(min($request->integer('page_size', 25), 100));
+        $team = $request->user()?->currentTeam;
+        $items = app(QuestQuery::class)->visible($team?->getAttribute('tenant_id'), $team?->getKey() === null ? null : (string) $team->getKey())->latest()->paginate(min(max($request->integer('page[size]', $request->integer('page_size', 25)), 1), 100));
 
         return response()->json($items->through(fn (Quest $item): array => $this->resource($item)));
     }
@@ -75,6 +76,13 @@ final class QuestsController extends Controller
         return response()->json(['data' => $this->progressResource(app(QuestsManager::class)->abandon($quest, (string) $request->user()->getKey()))]);
     }
 
+    private function authorizedQuest(Request $request, Quest $quest): Quest
+    {
+        $team = $request->user()?->currentTeam;
+
+        return app(QuestQuery::class)->visible($team?->getAttribute('tenant_id'), $team?->getKey() === null ? null : (string) $team->getKey())->whereKey($quest->getKey())->firstOrFail();
+    }
+
     private function progressList(Request $request, string $method): JsonResponse
     {
         $user = $request->user();
@@ -88,16 +96,9 @@ final class QuestsController extends Controller
         return response()->json($quests->through(fn (Quest $quest): array => $this->resource($quest)));
     }
 
-    private function authorizedQuest(Request $request, Quest $quest): Quest
-    {
-        $team = $request->user()?->currentTeam;
-
-        return app(QuestQuery::class)->visible($team?->getAttribute('tenant_id'), $team?->getKey() === null ? null : (string) $team->getKey())->whereKey($quest->getKey())->firstOrFail();
-    }
-
     private function resource(Model $quest): array
     {
-        return ['id' => (string) $quest->getKey(), 'type' => 'browser-game-quest', 'attributes' => ['slug' => $quest->getAttribute('slug'), 'name' => $quest->getAttribute('name'), 'status' => $quest->getAttribute('status'), 'objectives' => $quest->getAttribute('objectives'), 'rewards' => $quest->getAttribute('rewards'), 'repeatable' => $quest->getAttribute('repeatable')]];
+        return ['id' => (string) $quest->getKey(), 'type' => 'browser-game-quest', 'attributes' => ['slug' => $quest->getAttribute('slug'), 'name' => $quest->getAttribute('name'), 'storyline' => $quest->getAttribute('storyline'), 'status' => $quest->getAttribute('status'), 'objectives' => $quest->getAttribute('objectives'), 'prerequisites' => $quest->getAttribute('prerequisites'), 'branches' => $quest->getAttribute('branches'), 'dialogue' => $quest->getAttribute('dialogue'), 'rewards' => $quest->getAttribute('rewards'), 'repeatable' => $quest->getAttribute('repeatable')]];
     }
 
     private function progressResource(Model $progress): array
